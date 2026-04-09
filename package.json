@@ -23,7 +23,14 @@
     "dotenv": "^16.4.5",
     "ethers": "^6.13.0",
     "mime-types": "^2.1.35",
+    "multiformats": "9.9.0",
     "siwe": "^2.3.2"
+  },
+  "overrides": {
+    "multiformats": "9.9.0"
+  },
+  "resolutions": {
+    "multiformats": "9.9.0"
   },
   "devDependencies": {
     "@types/mime-types": "^2.1.4",

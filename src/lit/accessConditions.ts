@@ -4,36 +4,45 @@
  * Builds the Lit Protocol Unified Access Control Conditions that
  * govern when encrypted vault files can be decrypted.
  *
- * TWO condition sets are exported:
+ * ACCESS CONTROL FLOWS:
  *
  *  1. buildDeceasedConditions(vaultPDA)
  *     ── Checks the Solana vault account's `state` field equals
- *        VaultState::Unlocked (value = 3).  Used for full-asset
- *        and private-document release (FR9: DECEASED path, FR10).
+ *        VaultState::Deceased (value = 3).  Used for full-asset
+ *        and private-document release to beneficiary (FR9, FR10).
  *
  *  2. buildIncapacitatedConditions(vaultPDA)
- *     ── Checks the vault is in VaultState::ChallengePeriod (2).
- *        Used for monthly allowance release (FR9: INCAPACITATED).
+ *     ── Checks the vault is in VaultState::ChallengePeriod (1).
+ *        Used for medical allowance release to fiduciary.
+ *        This is where the timer matters: fiduciary waits for
+ *        challenge_end_time to pass before calling execute_claim.
  *
- * ─── Vault State Enum (must match Rust contract) ─────────────────
- *   0 = Active
- *   1 = AwaitingProof
- *   2 = ChallengePeriod
- *   3 = Unlocked  ← this is what Lit waits for
- *   4 = Cancelled
+ * ─── VAULT STATE ENUM (Rust: terminus/programs/terminus/src/lib.rs) ──
+ *   #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq, Eq)]
+ *   pub enum VaultState {
+ *       Active,              // 0
+ *       ChallengePeriod,     // 1
+ *       Incapacitated,       // 2
+ *       Deceased,            // 3
+ *   }
  *
- * ─── IMPORTANT: Coordinate with Dev 1 ────────────────────────────
- *   STATE_BYTE_OFFSET must equal the byte index of the `state: VaultState`
- *   field in the serialised Anchor account struct.
- *   Typical layout (add up field sizes before `state`):
- *     8   bytes  — Anchor discriminator
- *     32  bytes  — owner: Pubkey
- *     32  bytes  — beneficiary: Pubkey
- *     32  bytes  — medical_fiduciary: Pubkey
- *     8   bytes  — created_at: i64
- *     8   bytes  — heartbeat_deadline: i64
- *     8   bytes  — challenge_ends_at: i64
- *     1   byte   — state: VaultState  ← offset 128
+ * ─── VAULT ACCOUNT LAYOUT (CRITICAL: must match Rust struct) ────────
+ *   Offset  Field                 Type     Size
+ *   ──────────────────────────────────────────────────────────────
+ *   0-7     Anchor discriminator  u8[8]    8 bytes
+ *   8-39    owner                 Pubkey   32 bytes
+ *   40-71   beneficiary           Pubkey   32 bytes
+ *   72-103  fiduciary             Pubkey   32 bytes
+ *   104-135 ai_oracle             Pubkey   32 bytes
+ *   136     state                 VaultState (u8) → 1 byte ✓✓✓
+ *   137-144 last_heartbeat        i64      8 bytes
+ *   145-152 challenge_end_time    i64      8 bytes
+ *   153-160 medical_allowance     u64      8 bytes
+ *   161-168 claim_stake           u64      8 bytes
+ *   169     pending_claim_type    u8       1 byte
+ *   170     bump                  u8       1 byte
+ *
+ * ✓ Verified against: terminus/programs/terminus/src/lib.rs:160-171
  * ─────────────────────────────────────────────────────────────────
  */
 
@@ -41,13 +50,13 @@ import type { UnifiedAccessControlConditions } from '../types.js';
 import type { LitSolanaChain, SolanaNetwork } from '../types.js';
 
 // ── Byte layout constants — update if Rust struct changes ─────────
-const STATE_BYTE_OFFSET = 128;
-const UNLOCKED_STATE_VALUE = 3;       // VaultState::Unlocked
-const CHALLENGE_PERIOD_STATE_VALUE = 2; // VaultState::ChallengePeriod
+const STATE_BYTE_OFFSET = 136;  // ✓ VERIFIED: owner(8) + owner(32) + bene(32) + fid(32) + oracle(32)
+const DECEASED_STATE_VALUE = 3;       // VaultState::Deceased
+const CHALLENGE_PERIOD_STATE_VALUE = 1; // VaultState::ChallengePeriod (was 2, FIXED)
 
 /**
  * Returns unified Lit access conditions that unlock ONLY when the
- * Solana vault account has reached the `Unlocked` (3) state.
+ * Solana vault account has reached the `Deceased` (3) state.
  */
 export function buildDeceasedConditions(
   vaultPDA: string,
@@ -66,7 +75,7 @@ export function buildDeceasedConditions(
       returnValueTest: {
         key: '$.value[0].data[0]',
         comparator: 'contains',
-        value: buildExpectedStateSlice(STATE_BYTE_OFFSET, UNLOCKED_STATE_VALUE),
+        value: buildExpectedStateSlice(STATE_BYTE_OFFSET, DECEASED_STATE_VALUE),
       },
     },
   ];
@@ -74,7 +83,7 @@ export function buildDeceasedConditions(
 
 /**
  * Returns access conditions for the INCAPACITATED path.
- * The vault must be in ChallengePeriod (2) state.
+ * The vault must be in ChallengePeriod (1) state.
  */
 export function buildIncapacitatedConditions(
   vaultPDA: string,
